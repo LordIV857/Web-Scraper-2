@@ -45,7 +45,7 @@ def scrape():
         'url': url,
         'site_name': site_name,
         'image': image_url,
-        'html': response.text  # ou optionnel : soup.prettify()
+        #'html': response.text  # ou optionnel : soup.prettify()
     })
 
 if __name__ == '__main__':
