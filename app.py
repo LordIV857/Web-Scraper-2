@@ -63,7 +63,7 @@ def scrape():
 
     return jsonify({
         "site_name": meta_site_name or site_name or None,  # Si le nom n'est pas trouvé, on renvoie None
-        "image": image_url or None,      # Si l'image n'est pas trouvée, on renvoie None
+        "site_image": image_url or None,      # Si l'image n'est pas trouvée, on renvoie None
         "article_links": article_links,
     })
 
