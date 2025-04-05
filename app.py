@@ -42,11 +42,24 @@ def scrape():
     if not article_links:
         return jsonify({'error': 'No valid article links found'}), 404
 
-    # Extraction du nom du site depuis l'URL
+    # Récupération du nom du site
     site_name = extract_site_name(url)
 
+    # Faire une requête pour obtenir le HTML de la page et extraire l'image
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        image_url = extract_image(soup, url)
+        meta_site_name = extract_site_name_from_meta(soup)
+    except requests.exceptions.RequestException as e:
+        print(f"Erreur lors du téléchargement de la page: {e}")
+        image_url = None
+        meta_site_name = None
+
     return jsonify({
-        "site_name": site_name,
+        "site_name": meta_site_name or site_name or None,  # Si le nom n'est pas trouvé, on renvoie None
+        "image": image_url or None,      # Si l'image n'est pas trouvée, on renvoie None
         "article_links": article_links,
     })
 
@@ -197,11 +210,53 @@ def get_image_url(img_tag, base_url):
 
 def extract_site_name(url):
     """
-    Devine le nom du site à partir du domaine de l'URL.
+    Extraction du nom du site à partir de l'URL.
+    Si le nom contient un caractère spécial, il est nettoyé.
     """
     parsed_url = urlparse(url)
     domain = parsed_url.netloc.replace("www.", "").split('.')[0]
-    return domain.capitalize()
+    
+    # Supprime les caractères spéciaux après le premier caractère alphanumérique
+    if domain:
+        domain = re.sub(r'[^a-zA-ZÀ-ÿ\s-]', '', domain)  # Garder seulement les caractères alphabétiques et les accents
+        return domain.capitalize()
+
+    return None
+
+def extract_site_name_from_meta(soup):
+    """
+    Recherche du nom du site dans les balises meta.
+    Si un nom de site est trouvé, il est nettoyé des caractères spéciaux
+    et de tout ce qui vient après . _ ou -.
+    """
+    meta_site_name_tag = soup.find('meta', property='og:site_name')
+    if meta_site_name_tag and 'content' in meta_site_name_tag.attrs:
+        site_name = meta_site_name_tag.attrs['content']
+        # Enlève tout ce qui vient après un des caractères spéciaux . _ ou -
+        site_name = re.sub(r'[._-].*$', '', site_name)
+        return site_name
+    
+    return None
+
+def extract_image(soup, base_url):
+    """
+    Extraction de l'image associée au site via favicon ou OG image.
+    Retourne None si aucune image n'est trouvée.
+    """
+    # Cherche dans la balise <link rel="icon"> pour le favicon
+    favicon_tag = soup.find('link', rel='icon')
+    if favicon_tag and 'href' in favicon_tag.attrs:
+        favicon_url = favicon_tag.attrs['href']
+        # Si l'URL est relative, on la convertit en absolue
+        return urljoin(base_url, favicon_url)
+
+    # Cherche dans la balise <meta property="og:image"> pour l'image Open Graph
+    og_image_tag = soup.find('meta', property='og:image')
+    if og_image_tag and 'content' in og_image_tag.attrs:
+        return og_image_tag.attrs['content']
+
+    # Si aucune image n'est trouvée, on retourne None
+    return None
 
 if __name__ == '__main__':
     app.run(debug=True)
