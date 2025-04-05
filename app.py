@@ -24,6 +24,8 @@ def scrape():
     keywords = request.args.get('keywords')
     logic = request.args.get('logic', 'ou').lower()
 
+    url = url.replace('\\', '/')
+
     # Vérifie que l'URL est bien fournie
     if not url:
         return jsonify({'error': 'URL parameter is missing'}), 400
