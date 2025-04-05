@@ -1,6 +1,5 @@
 import requests
 import re
-import os
 from flask import Flask, request, jsonify
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
@@ -10,7 +9,7 @@ app = Flask(__name__)
 # Headers utilisés pour simuler un vrai navigateur et éviter les blocages de certains sites
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Accept-Language': 'fr-FR,en;q=0.9',
+    'Accept-Language': 'en-US,en;q=0.9',
     'Accept-Encoding': 'gzip, deflate, br',
     'Connection': 'keep-alive',
 }
@@ -23,9 +22,6 @@ def scrape():
     url = request.args.get('url')
     keywords = request.args.get('keywords')
     logic = request.args.get('logic', 'ou').lower()
-
-    # Remplacer les antislashs par des slashs
-    url = url.replace('\\', '/')
 
     # Vérifie que l'URL est bien fournie
     if not url:
@@ -63,7 +59,7 @@ def scrape():
 
     return jsonify({
         "site_name": meta_site_name or site_name or None,  # Si le nom n'est pas trouvé, on renvoie None
-        "site_image": image_url or None,      # Si l'image n'est pas trouvée, on renvoie None
+        "image": image_url or None,      # Si l'image n'est pas trouvée, on renvoie None
         "article_links": article_links,
     })
 
@@ -134,12 +130,11 @@ def extract_article_title_from_link(a_tag):
 
     longest_text = max(texts, key=len)
 
-    # Retire les concaténations de mots (genre CamelCase) qui ne sont pas naturelles
-    match = re.search(r'([a-z])([A-Z])', longest_text)
-    if match:
-        longest_text = longest_text[:match.start(2)]
+    # Divise le texte lorsqu'une minuscule est suivie d'une majuscule
+    segments = re.split(r'(?<=[a-z])(?=[A-Z])', longest_text)
 
-    return longest_text
+    # Retourne le segment le plus long
+    return max(segments, key=len) if segments else longest_text
 
 def is_internal_link(base_url, link):
     """
@@ -199,7 +194,7 @@ def get_image_url(img_tag, base_url):
     
     if srcset:
         # Prend la dernière image du srcset (souvent la plus grande)
-        srcset_urls = [url.strip().split(' ')[0] for url in srcset.split(',')]
+        srcset_urls = [url.strip().split(' ')[0] for url in srcset.split(', ')]
         img_url = srcset_urls[-1]
 
     if not img_url:
@@ -263,4 +258,4 @@ def extract_image(soup, base_url):
     return None
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(debug=True)
