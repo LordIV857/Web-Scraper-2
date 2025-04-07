@@ -29,16 +29,16 @@ def scrape():
 
     # Vérifie que l'URL est bien fournie
     if not url:
-        return jsonify({'error': 'URL parameter is missing'}), 400
+        return jsonify({'error': 'URL parameter is missing'}), 401
 
     # Vérifie que les mots-clés sont bien fournis
     if not keywords:
-        return jsonify({'error': 'Keywords parameter is missing'}), 400
+        return jsonify({'error': 'Keywords parameter is missing'}), 402
 
     # Nettoyage et transformation des mots-clés
     keywords_list = [kw.strip().lower() for kw in keywords.split(',') if kw.strip()]
     if not keywords_list:
-        return jsonify({'error': 'No valid keywords provided'}), 400
+        return jsonify({'error': 'No valid keywords provided'}), 403
 
     # Extraction des liens d'articles correspondant aux mots-clés
     article_links = extract_article_links(url, keywords_list, logic)
