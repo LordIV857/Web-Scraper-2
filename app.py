@@ -97,11 +97,20 @@ def extract_article_links(url, keywords, logic):
                 article_title = extract_article_title_from_link(a_tag)
                 img_tag = extract_image_from_parent(a_tag)
 
+                valid, found_keywords = is_valid_article(absolute_link, article_title, keywords, logic)
+
                 # Si le titre, l'image et les mots-clés correspondent, on ajoute le lien
-                if article_title and img_tag and is_valid_article(absolute_link, article_title, keywords, logic):
+                if article_title and img_tag and valid:
                     img_url = get_image_url(img_tag, url)
                     if img_url:
-                        links.append({'url': absolute_link, 'title': article_title, 'image': img_url})
+                        link_data = {
+                            'url': absolute_link,
+                            'title': article_title,
+                            'image': img_url
+                        }
+                        if logic == 'ou':
+                            link_data['found_keywords'] = found_keywords
+                        links.append(link_data)
 
         return links
 
@@ -112,16 +121,19 @@ def extract_article_links(url, keywords, logic):
 def is_valid_article(url, title, keywords, logic):
     """
     Vérifie si l'article contient les mots-clés dans l'URL ou le titre, selon la logique 'et' ou 'ou'.
+    Retourne un booléen (ou tuple avec les mots-clés trouvés pour 'ou').
     """
     url_lower = url.lower()
     title_lower = title.lower()
 
     if logic == 'et':
-        return all(keyword in url_lower or keyword in title_lower for keyword in keywords)
+        valid = all(keyword in url_lower or keyword in title_lower for keyword in keywords)
+        return valid, keywords if valid else []
     elif logic == 'ou':
-        return any(keyword in url_lower or keyword in title_lower for keyword in keywords)
+        found_keywords = [kw for kw in keywords if kw in url_lower or kw in title_lower]
+        return bool(found_keywords), found_keywords
     else:
-        return False
+        return False, []
 
 def extract_article_title_from_link(a_tag):
     """
