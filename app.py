@@ -109,7 +109,7 @@ def extract_article_links(url, keywords, logic):
                             'image': img_url
                         }
                         if logic == 'ou':
-                            link_data['found_keywords'] = found_keywords
+                            link_data['keywords'] = found_keywords
                         links.append(link_data)
 
         return links
