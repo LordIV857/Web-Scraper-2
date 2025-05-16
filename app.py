@@ -1,177 +1,277 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
 import requests
-from bs4 import BeautifulSoup
+import re
+import os
+from flask import Flask, request, jsonify
 from urllib.parse import urlparse, urljoin
-from collections import Counter
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
-CORS(app)  # Autorise les requêtes cross-origin (FlutterFlow)
+
+# Headers utilisés pour simuler un vrai navigateur et éviter les blocages de certains sites
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+}
 
 @app.route('/scrape', methods=['GET'])
 def scrape():
-    # 1. Lire les paramètres
+    """
+    Endpoint principal : reçoit une URL et une liste de mots-clés, puis retourne les liens d'articles valides.
+    """
     url = request.args.get('url')
     keywords = request.args.get('keywords')
-    logic = request.args.get('logic')
+    logic = request.args.get('logic', 'ou').lower()
 
-    print(f"[INFO] Paramètres reçus - url: {url}, keywords: {keywords}, logic: {logic}")
+    # Remplacer les antislashs par des slashs
+    url = url.replace('\\', '/')
 
-    if not url or not keywords or not logic:
-        print("[ERROR] Paramètres manquants")
-        return jsonify({"error": "Paramètres manquants"}), 400
+    # Vérifie que l'URL est bien fournie
+    if not url:
+        return jsonify({'error': 'URL parameter is missing'}), 401
 
-    keyword_list = [kw.strip().lower() for kw in keywords.split(',')]
-    logic = logic.lower()
+    # Vérifie que les mots-clés sont bien fournis
+    if not keywords:
+        return jsonify({'error': 'Keywords parameter is missing'}), 402
 
-    if logic not in ['et', 'ou']:
-        print("[ERROR] Paramètre 'logic' invalide")
-        return jsonify({"error": "Paramètre 'logic' invalide"}), 400
+    # Nettoyage et transformation des mots-clés
+    keywords_list = [kw.strip().lower() for kw in keywords.split(',') if kw.strip()]
+    if not keywords_list:
+        return jsonify({'error': 'No valid keywords provided'}), 403
 
+    # Extraction des liens d'articles correspondant aux mots-clés
+    article_links = extract_article_links(url, keywords_list, logic)
+
+    if not article_links:
+        return jsonify({'error': 'No valid article links found'}), 404
+
+    # Récupération du nom du site
+    site_name = extract_site_name(url)
+
+    # Faire une requête pour obtenir le HTML de la page et extraire l'image
     try:
-        # 2. Requête HTTP
-        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=10)
-        print(f"[INFO] Requête HTTP faite, statut: {response.status_code}")
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        image_url = extract_image(soup, url)
+        meta_site_name = extract_site_name_from_meta(soup)
+    except requests.exceptions.RequestException as e:
+        print(f"Erreur lors du téléchargement de la page: {e}")
+        image_url = None
+        meta_site_name = None
 
-        if 'text/html' not in response.headers.get('Content-Type', ''):
-            print("[ERROR] Le contenu n'est pas une page HTML")
-            return jsonify({"error": "Le contenu n'est pas une page HTML"}), 400
+    return jsonify({
+        "site_name": meta_site_name or site_name or None,  # Si le nom n'est pas trouvé, on renvoie None
+        "site_image": image_url or None,      # Si l'image n'est pas trouvée, on renvoie None
+        "article_links": article_links,
+    })
 
-        html = response.text
-        soup = BeautifulSoup(html, 'html.parser')
-        print("[INFO] HTML parsé")
+def extract_article_links(url, keywords, logic):
+    """
+    Scrape la page pour extraire les liens vers des articles contenant les mots-clés.
+    """
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
 
-        # 3. Extraire favicon
-        favicon_tag = soup.find('link', rel=lambda x: x and 'icon' in x.lower())
-        favicon_url = urljoin(url, favicon_tag['href']) if favicon_tag and favicon_tag.get('href') else ""
-        print(f"[INFO] Favicon extrait : {favicon_url}")
+        soup = BeautifulSoup(response.text, 'html.parser')
 
-        # 4. Nom du site = nom de domaine
-        parsed_url = urlparse(url)
-        site_name = parsed_url.hostname.replace('www.', '') if parsed_url.hostname else "Inconnu"
-        print(f"[INFO] Nom du site : {site_name}")
+        # On supprime les balises de navigation, en-tête et pied de page pour éviter le bruit
+        for tag in soup.find_all(['nav', 'header', 'footer']):
+            tag.decompose()
 
-        # 5. Extraire les chemins DOM des <img>
-        img_paths = get_img_dom_paths(soup)
-        print(f"[INFO] Nombre d'images trouvées: {len(img_paths)}")
+        links = []
 
-        # 6. Filtrer les chemins pour détecter les blocs similaires
-        filtered_paths = filter_paths_by_common_ancestors(img_paths)
-        print(f"[INFO] Nombre de chemins filtrés: {len(filtered_paths)}")
+        # Recherche de tous les liens <a>
+        for a_tag in soup.find_all('a', href=True):
+            # On ignore les liens à l'intérieur des titres pour éviter les doublons non pertinents
+            if a_tag.find_parent(['h3', 'h4', 'h5', 'h6']):
+                continue
 
-        # 7. Trouver le niveau de séparation commun
-        sep_index = find_separation_level(filtered_paths)
-        print(f"[INFO] Niveau de séparation trouvé: {sep_index}")
+            link = a_tag['href']
+            absolute_link = urljoin(url, link)
 
-        if sep_index is None:
-            print("[WARNING] Aucun niveau de séparation trouvé")
-            return jsonify({
-                "article_links": [],
-                "site_image": favicon_url,
-                "site_name": site_name
-            })
+            # Vérifie que le lien est interne et ressemble à un article
+            if is_internal_link(url, absolute_link) and is_article_link(absolute_link):
+                article_title = extract_article_title_from_link(a_tag)
+                img_tag = extract_image_from_parent(a_tag)
 
-        # 8. Extraire les blocs d'article
-        article_blocks = []
-        for path in filtered_paths:
-            if sep_index < 0:
-                ancestor = path[sep_index]
-            else:
-                ancestor = path[sep_index]
-            if ancestor not in article_blocks:
-                article_blocks.append(ancestor)
-        print(f"[INFO] Nombre de blocs d'article uniques extraits: {len(article_blocks)}")
+                valid, found_keywords = is_valid_article(absolute_link, article_title, keywords, logic)
 
-        # 9. Extraire les infos des articles
-        articles = []
-        for idx, block in enumerate(article_blocks):
-            info = extract_article_info(block, url, keyword_list)
-            print(f"[DEBUG] Article {idx} - Titre: {info['title']} | URL: {info['url']} | Keywords trouvés: {info['keywords']}")
+                # Si le titre, l'image et les mots-clés correspondent, on ajoute le lien
+                if article_title and img_tag and valid:
+                    img_url = get_image_url(img_tag, url)
+                    if img_url:
+                        link_data = {
+                            'url': absolute_link,
+                            'title': article_title,
+                            'image': img_url
+                        }
+                        if logic == 'ou':
+                            link_data['keywords'] = found_keywords
+                        links.append(link_data)
 
-            # Appliquer la logique AND/OR sur les keywords
-            if logic == 'et' and all(kw in info["keywords"] for kw in keyword_list):
-                articles.append(info)
-            elif logic == 'ou' and any(kw in info["keywords"] for kw in keyword_list):
-                articles.append(info)
+        return links
 
-        print(f"[INFO] Nombre d'articles retenus après filtrage: {len(articles)}")
-
-        # 10. Retourner les données finales
-        return jsonify({
-            "article_links": articles,
-            "site_image": favicon_url,
-            "site_name": site_name
-        })
-
-    except Exception as e:
-        print(f"[EXCEPTION] {str(e)}")
-        return jsonify({"error": f"Erreur lors du scraping : {str(e)}"}), 400
-
-
-def get_img_dom_paths(soup):
-    img_paths = []
-    for img in soup.find_all('img'):
-        path = []
-        current = img
-        while current:
-            path.append(current)
-            if current.name == 'html':
-                break
-            current = current.parent
-        img_paths.append(path[::-1])
-    return img_paths
-
-def filter_paths_by_common_ancestors(img_paths):
-    if not img_paths:
+    except requests.exceptions.RequestException as e:
+        print(f"Erreur lors du téléchargement de la page: {e}")
         return []
-    
-    max_len = max(len(p) for p in img_paths)
-    filtered = [p for p in img_paths if len(p) == max_len]
-    
-    index = max_len - 1
-    while index >= 0 and len(filtered) > 1:
-        tags_at_index = [p[index].name for p in filtered]
-        counter = Counter(tags_at_index)
-        filtered = [p for p in filtered if counter[p[index].name] > 1]
-        index -= 1
-    return filtered
 
-def find_separation_level(filtered_paths):
-    if not filtered_paths:
+def is_valid_article(url, title, keywords, logic):
+    """
+    Vérifie si l'article contient les mots-clés dans l'URL ou le titre, selon la logique 'et' ou 'ou'.
+    Retourne un booléen (ou tuple avec les mots-clés trouvés pour 'ou').
+    """
+    url_lower = url.lower()
+    title_lower = title.lower()
+
+    if logic == 'et':
+        valid = all(keyword in url_lower or keyword in title_lower for keyword in keywords)
+        return valid, keywords if valid else []
+    elif logic == 'ou':
+        found_keywords = [kw for kw in keywords if kw in url_lower or kw in title_lower]
+        return bool(found_keywords), found_keywords
+    else:
+        return False, []
+
+def extract_article_title_from_link(a_tag):
+    """
+    Tente d'extraire le titre d'un article à partir du contenu textuel du lien.
+    """
+    texts = [child.get_text(strip=True) for child in a_tag.find_all(True) if child.get_text(strip=True)]
+
+    if not texts:
         return None
 
-    path_len = len(filtered_paths[0])
-    for i in range(1, path_len + 1):
-        tags_at_level = [p[-i].name for p in filtered_paths]
-        if len(set(tags_at_level)) > 1:
-            return -i + 1
-    return -path_len
+    longest_text = max(texts, key=len)
 
-def extract_article_info(article_block, base_url, keywords):
-    img = article_block.find('img')
-    image_url = urljoin(base_url, img['src']) if img and img.has_attr('src') else None
+    # Divise le texte lorsqu'une minuscule est suivie d'une majuscule
+    segments = re.split(r'(?<=[a-z])(?=[A-Z])', longest_text)
 
-    link = article_block.find('a', href=True)
-    url = urljoin(base_url, link['href']) if link else None
+    # Retourne le segment le plus long
+    return max(segments, key=len) if segments else longest_text
 
-    title = (link.get_text(strip=True) if link else article_block.get_text(strip=True)) or ""
+def is_internal_link(base_url, link):
+    """
+    Vérifie si un lien est interne au domaine d'origine.
+    """
+    base_domain = urlparse(base_url).netloc
+    link_domain = urlparse(link).netloc
+    return base_domain == link_domain
 
-    title_lower = title.lower()
-    url_lower = url.lower() if url else ""
-    found_keywords = []
-    for kw in keywords:
-        kw_lower = kw.lower()
-        if kw_lower in title_lower or kw_lower in url_lower:
-            found_keywords.append(kw)
+def is_article_link(link):
+    """
+    Heuristiques pour savoir si un lien est probablement un article.
+    """
+    file_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.zip']
+    if any(link.endswith(ext) for ext in file_extensions):
+        return False
 
-    return {
-        "image": image_url,
-        "title": title,
-        "url": url,
-        "keywords": found_keywords
-    }
+    if len(link) < 20:
+        return False
 
+    exclude_paths = ['search', 'category', 'blog']
+    path = urlparse(link).path
+    if any(exclude in path.lower() for exclude in exclude_paths):
+        return False
+
+    if "-" not in link or "#" in link:
+        return False
+
+    return True
+
+def extract_image_from_parent(a_tag):
+    """
+    Tente de trouver une image associée au lien dans son parent HTML.
+    """
+    parent = a_tag.find_parent()
+
+    img_tag = parent.find('img')
+
+    # Si on ne trouve pas directement, on fouille plus loin dans la hiérarchie
+    if not img_tag:
+        for element in parent.find_all(True):
+            img_tag = element.find('img')
+            if img_tag:
+                return img_tag
+
+    if img_tag:
+        return img_tag
+
+    return None
+
+def get_image_url(img_tag, base_url):
+    """
+    Récupère l'URL absolue d'une image à partir d'un tag <img>.
+    """
+    srcset = img_tag.get('srcset')
+    img_url = None
+    
+    if srcset:
+        # Prend la dernière image du srcset (souvent la plus grande)
+        srcset_urls = [url.strip().split(' ')[0] for url in srcset.split(', ')]
+        img_url = srcset_urls[-1]
+
+    if not img_url:
+        # Fallback : src ou data-src
+        img_url = img_tag.get('data-src') or img_tag.get('src')
+
+    # Convertir l'URL relative en absolue
+    if img_url and img_url.startswith('/'):
+        img_url = urljoin(base_url, img_url)
+
+    return img_url
+
+def extract_site_name(url):
+    """
+    Extraction du nom du site à partir de l'URL.
+    Si le nom contient un caractère spécial, il est nettoyé.
+    """
+    parsed_url = urlparse(url)
+    domain = parsed_url.netloc.replace("www.", "").split('.')[0]
+    
+    # Supprime les caractères spéciaux après le premier caractère alphanumérique
+    if domain:
+        domain = re.sub(r'[^a-zA-ZÀ-ÿ\s-]', '', domain)  # Garder seulement les caractères alphabétiques et les accents
+        return domain.capitalize()
+
+    return None
+
+def extract_site_name_from_meta(soup):
+    """
+    Recherche du nom du site dans les balises meta.
+    Si un nom de site est trouvé, il est nettoyé des caractères spéciaux
+    et de tout ce qui vient après . _ ou -.
+    """
+    meta_site_name_tag = soup.find('meta', property='og:site_name')
+    if meta_site_name_tag and 'content' in meta_site_name_tag.attrs:
+        site_name = meta_site_name_tag.attrs['content']
+        # Enlève tout ce qui vient après un des caractères spéciaux . _ ou -
+        site_name = re.sub(r'[._-].*$', '', site_name)
+        return site_name
+    
+    return None
+
+def extract_image(soup, base_url):
+    """
+    Extraction de l'image associée au site via favicon ou OG image.
+    Retourne None si aucune image n'est trouvée.
+    """
+    # Cherche dans la balise <link rel="icon"> pour le favicon
+    favicon_tag = soup.find('link', rel='icon')
+    if favicon_tag and 'href' in favicon_tag.attrs:
+        favicon_url = favicon_tag.attrs['href']
+        # Si l'URL est relative, on la convertit en absolue
+        return urljoin(base_url, favicon_url)
+
+    # Cherche dans la balise <meta property="og:image"> pour l'image Open Graph
+    og_image_tag = soup.find('meta', property='og:image')
+    if og_image_tag and 'content' in og_image_tag.attrs:
+        return og_image_tag.attrs['content']
+
+    # Si aucune image n'est trouvée, on retourne None
+    return None
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
