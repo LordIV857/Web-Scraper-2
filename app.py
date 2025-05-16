@@ -15,60 +15,87 @@ def scrape():
     keywords = request.args.get('keywords')
     logic = request.args.get('logic')
 
+    print(f"[INFO] Paramètres reçus - url: {url}, keywords: {keywords}, logic: {logic}")
+
     if not url or not keywords or not logic:
+        print("[ERROR] Paramètres manquants")
         return jsonify({"error": "Paramètres manquants"}), 400
 
     keyword_list = [kw.strip().lower() for kw in keywords.split(',')]
     logic = logic.lower()
 
     if logic not in ['et', 'ou']:
+        print("[ERROR] Paramètre 'logic' invalide")
         return jsonify({"error": "Paramètre 'logic' invalide"}), 400
 
     try:
         # 2. Requête HTTP
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=10)
+        print(f"[INFO] Requête HTTP faite, statut: {response.status_code}")
 
         if 'text/html' not in response.headers.get('Content-Type', ''):
+            print("[ERROR] Le contenu n'est pas une page HTML")
             return jsonify({"error": "Le contenu n'est pas une page HTML"}), 400
 
         html = response.text
         soup = BeautifulSoup(html, 'html.parser')
+        print("[INFO] HTML parsé")
 
         # 3. Extraire favicon
         favicon_tag = soup.find('link', rel=lambda x: x and 'icon' in x.lower())
         favicon_url = urljoin(url, favicon_tag['href']) if favicon_tag and favicon_tag.get('href') else ""
+        print(f"[INFO] Favicon extrait : {favicon_url}")
 
         # 4. Nom du site = nom de domaine
         parsed_url = urlparse(url)
         site_name = parsed_url.hostname.replace('www.', '') if parsed_url.hostname else "Inconnu"
+        print(f"[INFO] Nom du site : {site_name}")
 
         # 5. Extraire les chemins DOM des <img>
         img_paths = get_img_dom_paths(soup)
+        print(f"[INFO] Nombre d'images trouvées: {len(img_paths)}")
 
         # 6. Filtrer les chemins pour détecter les blocs similaires
         filtered_paths = filter_paths_by_common_ancestors(img_paths)
+        print(f"[INFO] Nombre de chemins filtrés: {len(filtered_paths)}")
 
         # 7. Trouver le niveau de séparation commun
         sep_index = find_separation_level(filtered_paths)
+        print(f"[INFO] Niveau de séparation trouvé: {sep_index}")
+
+        if sep_index is None:
+            print("[WARNING] Aucun niveau de séparation trouvé")
+            return jsonify({
+                "article_links": [],
+                "site_image": favicon_url,
+                "site_name": site_name
+            })
 
         # 8. Extraire les blocs d'article
         article_blocks = []
         for path in filtered_paths:
-            ancestor = path[sep_index]
+            if sep_index < 0:
+                ancestor = path[sep_index]
+            else:
+                ancestor = path[sep_index]
             if ancestor not in article_blocks:
                 article_blocks.append(ancestor)
+        print(f"[INFO] Nombre de blocs d'article uniques extraits: {len(article_blocks)}")
 
         # 9. Extraire les infos des articles
         articles = []
-        for block in article_blocks:
+        for idx, block in enumerate(article_blocks):
             info = extract_article_info(block, url, keyword_list)
+            print(f"[DEBUG] Article {idx} - Titre: {info['title']} | URL: {info['url']} | Keywords trouvés: {info['keywords']}")
 
             # Appliquer la logique AND/OR sur les keywords
             if logic == 'et' and all(kw in info["keywords"] for kw in keyword_list):
                 articles.append(info)
             elif logic == 'ou' and any(kw in info["keywords"] for kw in keyword_list):
                 articles.append(info)
+
+        print(f"[INFO] Nombre d'articles retenus après filtrage: {len(articles)}")
 
         # 10. Retourner les données finales
         return jsonify({
@@ -77,16 +104,12 @@ def scrape():
             "site_name": site_name
         })
 
-
     except Exception as e:
+        print(f"[EXCEPTION] {str(e)}")
         return jsonify({"error": f"Erreur lors du scraping : {str(e)}"}), 400
 
 
 def get_img_dom_paths(soup):
-    """
-    Pour chaque <img>, remonte la chaîne d'ancêtres jusqu'à <html>.
-    Retourne une liste de listes d'éléments BS4.
-    """
     img_paths = []
     for img in soup.find_all('img'):
         path = []
@@ -96,14 +119,10 @@ def get_img_dom_paths(soup):
             if current.name == 'html':
                 break
             current = current.parent
-        img_paths.append(path[::-1])  # inverser pour que html soit en début
+        img_paths.append(path[::-1])
     return img_paths
 
 def filter_paths_by_common_ancestors(img_paths):
-    """
-    Filtre les chemins DOM pour ne garder que ceux qui ont même longueur,
-    et supprime ceux qui ont des balises uniques à un niveau donné.
-    """
     if not img_paths:
         return []
     
@@ -119,10 +138,6 @@ def filter_paths_by_common_ancestors(img_paths):
     return filtered
 
 def find_separation_level(filtered_paths):
-    """
-    Trouve l'indice (depuis la fin) où les chemins se séparent.
-    Retourne l'indice du plus petit ancêtre commun.
-    """
     if not filtered_paths:
         return None
 
@@ -130,29 +145,18 @@ def find_separation_level(filtered_paths):
     for i in range(1, path_len + 1):
         tags_at_level = [p[-i].name for p in filtered_paths]
         if len(set(tags_at_level)) > 1:
-            return -i + 1  # index juste avant la séparation
+            return -i + 1
     return -path_len
 
 def extract_article_info(article_block, base_url, keywords):
-    """
-    À partir d'un bloc article BS4, extrait :
-    - image src absolue
-    - url du lien absolue
-    - titre texte
-    - liste des keywords trouvés dans le titre ou l'url (insensible à la casse)
-    """
-    # Trouver la première image dans le bloc
     img = article_block.find('img')
     image_url = urljoin(base_url, img['src']) if img and img.has_attr('src') else None
 
-    # Trouver le premier lien avec href
     link = article_block.find('a', href=True)
     url = urljoin(base_url, link['href']) if link else None
 
-    # Titre: texte du lien ou fallback texte du bloc
     title = (link.get_text(strip=True) if link else article_block.get_text(strip=True)) or ""
 
-    # Détection keywords dans titre + url
     title_lower = title.lower()
     url_lower = url.lower() if url else ""
     found_keywords = []
@@ -167,7 +171,6 @@ def extract_article_info(article_block, base_url, keywords):
         "url": url,
         "keywords": found_keywords
     }
-
 
 
 if __name__ == '__main__':
